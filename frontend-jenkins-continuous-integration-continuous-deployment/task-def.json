@@ -1,0 +1,31 @@
+{
+  "family": "ferovinum-app",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::905418280053:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::905418280053:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "ferovinum-app",
+      "image": "905418280053.dkr.ecr.eu-west-1.amazonaws.com/ferovinum-app-repo:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "hostPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ferovinum-app",
+          "awslogs-region": "eu-west-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

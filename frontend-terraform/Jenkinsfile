@@ -1,0 +1,77 @@
+pipeline {
+    agent any
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'GITHUB_CREDENTIAL', defaultValue: 'github_creds', description: 'Github access credentials id')
+        string(name: 'GITHUB_REPO_URL', defaultValue: 'https://github.com/robertyawmegbenu/infra-solution-ferovinum.git', description: 'Github repository url')
+        string(name: 'GITHUB_BRANCH', defaultValue: 'main', description: 'Github branch for your build')
+        choice(name: 'TERRAFORM_ACTION', choices: ['', 'apply', 'destroy'], description: 'Select Terraform action: Apply or Destroy')
+    }
+
+    environment {
+        GITHUB_CREDENTIAL = "${params.GITHUB_CREDENTIAL}"
+        GITHUB_REPO_URL = "${params.GITHUB_REPO_URL}"
+        GITHUB_BRANCH = "${params.GITHUB_BRANCH}"
+        TERRAFORM_ACTION = "${params.TERRAFORM_ACTION}" 
+    }
+
+    stages {
+        stage("Validate Parameters") {
+            steps {
+                script {
+                    if (TERRAFORM_ACTION == null || TERRAFORM_ACTION.trim() == '') {
+                        error('TERRAFORM_ACTION is a required parameter. Please choose either "apply" or "destroy".')
+                    }
+                }
+            }
+        }
+        
+        stage("Checkout Code From GitHub") {
+            steps {
+                script {
+                    git branch: "${GITHUB_BRANCH}", credentialsId: "${GITHUB_CREDENTIAL}", url: "${GITHUB_REPO_URL}"
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                script {
+                    dir("${WORKSPACE}/backend-terraform") {
+                        withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                            sh 'terraform init' 
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                script {
+                    dir("${WORKSPACE}/backend-terraform") {
+                        withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                            sh 'terraform plan'
+                        }
+                     }
+                 }
+             }
+         }
+        
+        stage('Terraform Apply Or Destroy') {
+            steps {
+                script {
+                    dir("${WORKSPACE}/backend-terraform") {
+                        withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                            sh 'terraform "${TERRAFORM_ACTION}" -auto-approve'
+                           }
+                        }
+                    }
+                }
+            }
+        }
+    }
+

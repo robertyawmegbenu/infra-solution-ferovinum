@@ -1,0 +1,31 @@
+{
+  "cluster": "ferovinum-ecs-cluster",
+  "serviceName": "ferovinum-ecs-service",
+  "taskDefinition": "arn:aws:ecs:eu-west-1:905418280053:task-definition/ferovinum-app:03",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "platformVersion": "LATEST",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": [
+        "subnet-0b355c1e081bfb317",
+        "subnet-04e7a2e028dcb65ea"
+      ],
+      "securityGroups": [
+        "sg-0a73426b502677a30"
+      ],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "arn:aws:elasticloadbalancing:eu-west-1:905418280053:targetgroup/ferovinum-tg/98cddedb5cd2c42c",
+      "containerName": "ferovinum-app",
+      "containerPort": 80
+    }
+  ],
+  "deploymentConfiguration": {
+    "minimumHealthyPercent": 50,
+    "maximumPercent": 200
+  }
+}

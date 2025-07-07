@@ -1,0 +1,179 @@
+pipeline {
+    agent any
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build from')
+        string(name: 'REPO_URL', defaultValue: 'https://github.com/robertyawmegbenu/infra-solution-ferovinum.git', description: 'Repository URL to build from')
+        string(name: 'VERSION', defaultValue: "V00${BUILD_ID}", description: 'Version of Docker image to be built, e.g., V001')
+        string(name: 'TASK_DEF_JSON', defaultValue: 'continuous-integration-continuous-deployment/task-def.json', description: 'Path to the task definition JSON file')
+        string(name: 'CREATE_SERVICE_FILE', defaultValue: 'continuous-integration-continuous-deployment/create-ecs-service.json', description: 'Path to the create service JSON file')
+        string(name: 'UPDATE_SERVICE_FILE', defaultValue: 'continuous-integration-continuous-deployment/update-ecs-service.json', description: 'Path to the update service JSON file')
+        string(name: 'SERVICE_NAME', defaultValue: 'ferovinum-ecs-service', description: 'ECS Service Name')
+        string(name: 'ECS_CLUSTER_NAME', defaultValue: 'ferovinum-ecs-cluster', description: 'ECS Cluster Name')
+    }
+
+    environment {
+        BRANCH = "${params.BRANCH}"
+        REPO_URL = "${params.REPO_URL}"
+        VERSION = "${params.VERSION}"
+        TASK_DEF_JSON = "${params.TASK_DEF_JSON}"
+        CREATE_SERVICE_FILE = "${params.CREATE_SERVICE_FILE}"
+        UPDATE_SERVICE_FILE = "${params.UPDATE_SERVICE_FILE}"
+        SERVICE_NAME = "${params.SERVICE_NAME}"
+        ECS_CLUSTER_NAME = "${params.ECS_CLUSTER_NAME}"
+    }
+
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Clone GitHub Repo') {
+            steps {
+                git branch: "${BRANCH}", credentialsId: 'github_creds', url: "${REPO_URL}"
+            }
+        }
+
+        stage('Build Java Application') {
+            steps {
+                dir('ferovinum-backend') {
+                    sh 'mvn clean package'
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t ferovinum-java-app ./ferovinum-backend'
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                script {
+                    sh 'trivy image --exit-code 1 --severity HIGH,CRITICAL ferovinum-java-app'
+                }
+            }
+        }
+
+        stage('Push To Elastic Container Registry') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        sh """
+                            aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 905418280053.dkr.ecr.us-east-1.amazonaws.com
+                            docker tag ferovinum-html-image 905418280053.dkr.ecr.us-east-1.amazonaws.com/ferovinum-app-repo:${VERSION}
+                            docker push 905418280053.dkr.ecr.us-east-1.amazonaws.com/ferovinum-app-repo:${VERSION}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Update Task Definition') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        def image = "905418280053.dkr.ecr.us-east-1.amazonaws.com/ferovinum-app-repo:${VERSION}"
+                        def taskDefJson = readFile(file: TASK_DEF_JSON)
+                        taskDefJson = taskDefJson.replaceAll(/"image": "905418280053.dkr.ecr.us-east-1.amazonaws.com\/ferovinum-app-repo:[^"]+"/, "\"image\": \"${image}\"")
+                        writeFile(file: TASK_DEF_JSON, text: taskDefJson)
+                    }
+                }
+            }
+        }
+
+        stage('Register Task Definition') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        def taskDefArn = sh(script: """
+                            aws ecs register-task-definition --cli-input-json file://${TASK_DEF_JSON} --query 'taskDefinition.taskDefinitionArn' --output text
+                        """, returnStdout: true).trim()
+
+                        echo "Task Definition ARN: ${taskDefArn}"
+
+                        def createServiceJson = readFile(file: CREATE_SERVICE_FILE)
+                        createServiceJson = createServiceJson.replaceAll(/"taskDefinition": "arn:aws:ecs:[^"]+"/, "\"taskDefinition\": \"${taskDefArn}\"")
+                        writeFile(file: CREATE_SERVICE_FILE, text: createServiceJson)
+
+                        def updateServiceJson = readFile(file: UPDATE_SERVICE_FILE)
+                        updateServiceJson = updateServiceJson.replaceAll(/"taskDefinition": "arn:aws:ecs:[^"]+"/, "\"taskDefinition\": \"${taskDefArn}\"")
+                        writeFile(file: UPDATE_SERVICE_FILE, text: updateServiceJson)
+                    }
+                }
+            }
+        }
+
+        stage('Stop all running tasks') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        def serviceExists = sh(script: """
+                            aws ecs describe-services --cluster ${ECS_CLUSTER_NAME} --services ${SERVICE_NAME} --query "services[?status=='ACTIVE'].[serviceName]" --output text
+                        """, returnStdout: true).trim()
+
+                        if (serviceExists) {
+                            sh """
+                                tasks=\$(aws ecs list-tasks --cluster ${ECS_CLUSTER_NAME} --service-name ${SERVICE_NAME} --desired-status RUNNING --query taskArns --output text)
+                                for task in \$tasks; do
+                                    aws ecs stop-task --cluster ${ECS_CLUSTER_NAME} --task \$task
+                                done
+                            """
+                        } else {
+                            echo "Service ${SERVICE_NAME} does not exist. Skipping stop tasks step."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Wait for Tasks to Stop') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        def serviceExists = sh(script: """
+                            aws ecs describe-services --cluster ${ECS_CLUSTER_NAME} --services ${SERVICE_NAME} --query "services[?status=='ACTIVE'].[serviceName]" --output text
+                        """, returnStdout: true).trim()
+
+                        if (serviceExists) {
+                            timeout(time: 5, unit: 'MINUTES') {
+                                waitUntil {
+                                    def tasks = sh(script: """
+                                        aws ecs list-tasks --cluster ${ECS_CLUSTER_NAME} --service-name ${SERVICE_NAME} --desired-status RUNNING --query taskArns --output text
+                                    """, returnStdout: true).trim()
+
+                                    return tasks == null || tasks.isEmpty()
+                                }
+                            }
+                        } else {
+                            echo "Service ${SERVICE_NAME} does not exist. Skipping wait for tasks to stop step."
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Check and Update ECS Service') {
+            steps {
+                script {
+                    withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'aws_creds', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                        def clientToken = UUID.randomUUID().toString()
+                        sh """
+                            SERVICE_EXISTS=\$(aws ecs describe-services --cluster ${ECS_CLUSTER_NAME} --services ${SERVICE_NAME} --query "services[?status=='ACTIVE'].[serviceName]" --output text)
+
+                            if [ -z "\$SERVICE_EXISTS" ]; then
+                              echo "Service ${SERVICE_NAME} does not exist. Creating service..."
+                              aws ecs create-service --cli-input-json file://${CREATE_SERVICE_FILE} --client-token ${clientToken}
+                            else
+                              echo "Service ${SERVICE_NAME} exists. Updating service..."
+                              aws ecs update-service --cli-input-json file://${UPDATE_SERVICE_FILE}
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+    }
+}
