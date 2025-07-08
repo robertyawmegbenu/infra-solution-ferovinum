@@ -12,19 +12,19 @@ locals {
 
 
 # RDS MySQL Aurora Instance
-resource "aws_db_instance" "itgenius_instance" {
+resource "aws_db_instance" "ferovinium_instance" {
   allocated_storage      = 20
   storage_type           = "gp2"
   engine                 = "mysql"
   engine_version         = var.db_engine_version
   instance_class         = var.db_instance_class
-  identifier             = "itgeniusdb"
+  identifier             = "feroviniumdb"
   db_name                = var.db_name
   username               = local.db_credentials["username"]
   password               = local.db_credentials["password"]
   publicly_accessible    = true
-  vpc_security_group_ids = [aws_security_group.itgenius_sg.id]
-  db_subnet_group_name   = aws_db_subnet_group.itgenius_subnet_group.name
+  vpc_security_group_ids = [aws_security_group.ferovinium_sg.id]
+  db_subnet_group_name   = aws_db_subnet_group.ferovinium_subnet_group.name
 
   backup_retention_period = 7
   multi_az                = false
@@ -35,11 +35,11 @@ resource "aws_db_instance" "itgenius_instance" {
 }
 
 # Subnet Group for RDS
-resource "aws_db_subnet_group" "itgenius_subnet_group" {
-  name       = "itgenius-db-subnet-group"
+resource "aws_db_subnet_group" "ferovinium_subnet_group" {
+  name       = "ferovinium-db-subnet-group"
   subnet_ids = var.subnet_ids
 
   tags = {
-    Name = "itgenius-db-subnet-group"
+    Name = "ferovinium-db-subnet-group"
   }
 }
